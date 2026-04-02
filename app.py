@@ -1,73 +1,91 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
 from scipy.sparse import hstack
 
-# -------- LOAD DATA --------
-df = pd.read_csv("data/deceptive-opinion.csv")
-df = df[['text', 'deceptive', 'polarity']]
-df.columns = ['review', 'label', 'polarity']
-df['label'] = df['label'].map({'truthful': 0, 'deceptive': 1})
-df['review'] = df['review'].str.lower()
+# ---------------- LOAD DATA ----------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("data/deceptive-opinion.csv")
+    df = df[['text', 'deceptive']]
+    df.columns = ['review', 'label']
+    df['label'] = df['label'].map({'truthful': 0, 'deceptive': 1})
+    df['review'] = df['review'].str.lower()
+    return df
 
-# -------- FEATURES --------
-fake_words = [
-    'amazing','perfect','best','must','recommended',
-    'guaranteed','100%','top','excellent','fantastic',
-    'incredible','outstanding','ultimate','superb'
-]
-X_text = df['review']
-X_extra = df['polarity'].map({'positive': 1, 'negative': 0}).values.reshape(-1,1)
+df = load_data()
 
-df['fake_score'] = df['review'].apply(
-    lambda x: sum(word in x for word in fake_words) * 2
-)
+# ---------------- TRAIN MODEL ----------------
+@st.cache_resource
+def train_model(df):
+    X = df['review']
+    y = df['label']
 
-X_extra2 = df['fake_score'].values.reshape(-1,1)
+    vectorizer = TfidfVectorizer(
+        stop_words='english',
+        ngram_range=(1, 2),
+        max_features=5000
+    )
 
-# -------- VECTORIZER --------
-vectorizer = TfidfVectorizer(
-    stop_words='english',
-    ngram_range=(1,2),
-    token_pattern=r'(?u)\b\w+\b|!+'
-)
+    X_vec = vectorizer.fit_transform(X)
 
-X_text_vec = vectorizer.fit_transform(X_text)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_vec, y, test_size=0.2, random_state=42
+    )
 
-X_combined = hstack([X_text_vec, X_extra, X_extra2])
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train, y_train)
 
-y = df['label']
+    acc = accuracy_score(y_test, model.predict(X_test))
 
-# -------- MODEL --------
-model = LogisticRegression(max_iter=1000)
-model.fit(X_combined, y)
+    return model, vectorizer, acc
 
-# -------- EXPLANATION FUNCTION --------
+model, vectorizer, accuracy = train_model(df)
+
+# ---------------- RULE-BASED BOOST ----------------
+def rule_boost(text):
+    score = 0
+
+    if text.count("!") > 2:
+        score += 1
+
+    fake_words = ["best", "amazing", "perfect", "guaranteed", "must visit"]
+    if any(word in text for word in fake_words):
+        score += 1
+
+    words = text.split()
+    if len(set(words)) < len(words) * 0.7:
+        score += 1
+
+    return score
+
+# ---------------- EXPLAIN ----------------
 def explain_review(text):
     reasons = []
+
+    if text.count("!") > 2:
+        reasons.append("Too many exclamation marks")
+
+    if any(word in text for word in ["best", "amazing", "perfect"]):
+        reasons.append("Overuse of promotional words")
+
     words = text.split()
-
-    if len(words) != len(set(words)):
-        reasons.append("Repeated words")
-
-    if "!" in text:
-        reasons.append("Excessive punctuation")
-
-    if any(word in text for word in fake_words):
-        reasons.append("Promotional language")
-
-    if len(words) < 5:
-        reasons.append("Very short review")
+    if len(set(words)) < len(words) * 0.7:
+        reasons.append("Repetitive wording")
 
     return ", ".join(reasons) if reasons else "Looks natural"
 
-# -------- STREAMLIT UI --------
-st.set_page_config(page_title="Fake Review Detector", layout="centered")
+# ---------------- STREAMLIT UI ----------------
+st.set_page_config(page_title="Fake Review Detector", page_icon="🧠")
 
 st.title("🧠 Fake Review Detector")
-st.write("Enter a review and check if it's Fake or Genuine")
+st.write("Check if a review is **Fake or Genuine**")
+
+st.write(f"📊 Model Accuracy: **{accuracy:.2f}**")
 
 user_input = st.text_area("✍️ Enter Review")
 
@@ -79,20 +97,21 @@ if st.button("Check Review"):
         text = user_input.lower()
 
         review_vec = vectorizer.transform([text])
-        extra_feature = np.array([[1]])
-        fake_score = sum(word in text for word in fake_words) * 2
-        extra_feature2 = np.array([[fake_score]])
-
-        final_input = hstack([review_vec, extra_feature, extra_feature2])
-
-        prediction = model.predict(final_input)
-        prob = model.predict_proba(final_input)
+        prediction = model.predict(review_vec)
+        prob = model.predict_proba(review_vec)
         confidence = max(prob[0]) * 100
 
+        # 🔥 RULE BOOST
+        boost = rule_boost(text)
+        if boost >= 2:
+            prediction[0] = 1
+
+        # RESULT
         if prediction[0] == 1:
             st.error(f"Fake ❌ (Confidence: {confidence:.2f}%)")
         else:
             st.success(f"Genuine ✅ (Confidence: {confidence:.2f}%)")
 
+        # EXPLANATION
         reason = explain_review(text)
         st.info(f"Reason: {reason}")
