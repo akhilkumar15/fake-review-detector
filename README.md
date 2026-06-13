@@ -74,7 +74,7 @@ The balanced dataset helped train the model without favoring one class over anot
 
 ## Model Performance
 
-The model achieves approximately 85% accuracy on the test dataset.
+The model achieves approximately 89% accuracy on the test dataset.
 
 To evaluate performance, I used:
 
